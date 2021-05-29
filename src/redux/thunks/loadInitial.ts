@@ -4,11 +4,9 @@ import * as FileSystem from "expo-file-system";
 
 import uiSlice from "../slices/ui";
 import { TMThunkAction, TMThunkDispatch, t } from "../types";
+import { withDatabaseTxn, DB_PATH, DB_FOLDER } from "../../tree_data/sqlite";
 
 const { setLoaded } = uiSlice.actions;
-
-const DB_FOLDER = `${FileSystem.documentDirectory}SQLite`;
-const DB_FILE = `${DB_FOLDER}/tree_map.db`;
 
 export default function loadInitial(): TMThunkAction {
   return t("loadInitial", {}, async (dispatch: TMThunkDispatch) => {
@@ -25,11 +23,30 @@ async function loadFont() {
 }
 
 async function loadDb() {
-  const asset = Asset.fromModule(require("../../../assets/tree_data.db"));
-  const fileInfo = await FileSystem.getInfoAsync(DB_FILE, { md5: true });
-  if (fileInfo.exists && fileInfo.md5 === asset.hash) {
-    console.log("Existing DB found");
-    return;
+  const fileInfo = await FileSystem.getInfoAsync(DB_PATH);
+  if (fileInfo.exists) {
+    // Test the db to see if it works
+    try {
+      await withDatabaseTxn((tx, resolve, reject) => {
+        tx.executeSql(
+          "select count(*) from trees",
+          [],
+          () => {
+            resolve();
+          },
+          (err) => {
+            reject(err);
+            return true;
+          }
+        );
+      });
+      console.log("The existing DB looks good");
+      return;
+    } catch (e) {
+      console.log("Removing existing DB", e);
+      await FileSystem.deleteAsync(DB_PATH, { idempotent: true });
+      await FileSystem.deleteAsync(`${DB_PATH}-journal`, { idempotent: true });
+    }
   }
 
   const folderInfo = await FileSystem.getInfoAsync(DB_FOLDER);
@@ -38,9 +55,9 @@ async function loadDb() {
   }
 
   console.log("Loading DB from asset file");
-  const result = await FileSystem.downloadAsync(
+  const { uri } = await FileSystem.downloadAsync(
     Asset.fromModule(require("../../../assets/tree_data.db")).uri,
-    DB_FILE
+    DB_PATH
   );
-  console.log("Loaded DB file");
+  console.log("Loaded DB file: " + uri);
 }

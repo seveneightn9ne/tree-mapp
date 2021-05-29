@@ -1,33 +1,66 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { Text, View, StyleSheet, Dimensions } from "react-native";
-import MapView, { Region, PROVIDER_GOOGLE } from "react-native-maps";
+import MapView, { Region, PROVIDER_GOOGLE, Marker } from "react-native-maps";
 import { connect } from "react-redux";
 import * as Location from "expo-location";
 
 import { TMState } from "../redux/types";
 import { TouchableWithoutFeedback } from "react-native-gesture-handler";
+import getTreesInArea, {
+  Area,
+  GetTreesError,
+} from "../tree_data/getTreesInArea";
+import { Tree } from "../tree_data/tree";
 
 const mapStateToProps = (state: TMState) => ({
   //fontLoaded: state.ui.fontLoaded,
 });
 type Props = ReturnType<typeof mapStateToProps>;
 
-function MapPage() {
-  const [location, setLocation] = useState<Location.LocationData | null>(null);
-  const [region, setRegion] = useState<Region | undefined>(undefined);
-  const [hasPanned, setHasPanned] = useState(false);
-  const [isWatchingPosition, setIsWatchingPosition] = useState(false);
-
-  const initialRegion = {
+/**
+ * Region centered on the given location and zoomed to street-tree level.
+ * If no location is given, show a zoomed-out city view.
+ */
+function centeredRegion(location?: Location.LocationData) {
+  return {
     latitude: location ? location.coords.latitude : 40.7307786,
     longitude: location ? location.coords.longitude : -73.9951143,
     latitudeDelta: location ? 0.002 : 0.02,
     longitudeDelta: location ? 0.0005 : 0.05,
   };
+}
 
-  const recenter = () => {
-    setRegion(initialRegion);
-    setHasPanned(false);
+function treesToMarkers(trees: Tree[]) {
+  return trees.map((tree) => {
+    return (
+      <Marker
+        key={tree.tree_id}
+        title={tree.spc_common}
+        description={tree.spc_latin}
+        coordinate={{
+          latitude: tree.latitude,
+          longitude: tree.longitude,
+        }}
+      />
+    );
+  });
+}
+
+function MapPage() {
+  const [location, setLocation] = useState<Location.LocationData | undefined>(
+    undefined
+  );
+  const [region, setRegion] = useState<Region | undefined>(undefined);
+  const [isWatchingPosition, setIsWatchingPosition] = useState(false);
+  const [trees, setTrees] = useState<Tree[]>([]);
+  const mapRef = useRef<MapView>(null);
+
+  const recenter = (location: Location.LocationData) => {
+    setRegion(centeredRegion(location));
+  };
+
+  const updateWithLocation = (location: Location.LocationData) => {
+    setLocation(location);
   };
 
   useEffect(() => {
@@ -51,8 +84,8 @@ function MapPage() {
           const location = await Location.getCurrentPositionAsync({
             accuracy: Location.Accuracy.Highest,
           });
-          setLocation(location);
-          recenter();
+          updateWithLocation(location);
+          recenter(location);
           console.log("Set initial location");
 
           const { remove } = await Location.watchPositionAsync(
@@ -62,10 +95,7 @@ function MapPage() {
             },
             (location) => {
               // console.log("got location");
-              setLocation(location);
-              if (!hasPanned) {
-                recenter();
-              }
+              updateWithLocation(location);
             }
           );
           console.log("Now watching position");
@@ -80,32 +110,54 @@ function MapPage() {
     return removeEffect;
   });
 
-  const onPan = () => setHasPanned(true);
+  const onRegionChange = (region: Region) => {
+    setRegion(region);
+  };
+
+  const onRegionChangeComplete = async () => {
+    const area = await mapRef.current?.getMapBoundaries();
+    if (area) {
+      const trees = await getTreesInArea(area);
+      if (trees == GetTreesError.ErrTooManyTrees) {
+        setTrees([]);
+      } else {
+        setTrees(trees);
+      }
+    }
+  };
+
+  const treeMarkers = treesToMarkers(trees);
+  console.log("there are " + treeMarkers.length + " markers");
 
   const recenterOverlay = location ? (
     <View style={styles.recenterOverlayOuter}>
-      <TouchableWithoutFeedback onPress={recenter}>
+      <TouchableWithoutFeedback onPress={() => recenter(location)}>
         <View style={styles.recenterOverlay}>
           <Text style={styles.recenterOverlayText}>gps_fixed</Text>
         </View>
       </TouchableWithoutFeedback>
     </View>
   ) : null;
+
   return (
     <View style={styles.container}>
       <MapView
+        ref={mapRef}
         provider={PROVIDER_GOOGLE}
         style={styles.mapStyle}
         customMapStyle={mapStyle}
-        initialRegion={initialRegion}
-        region={region}
+        initialRegion={centeredRegion(location)}
         showsUserLocation={true}
         showsPointsOfInterest={false}
         showsBuildings={false}
         showsIndoors={false}
         showsTraffic={false}
-        onPanDrag={onPan}
-      ></MapView>
+        region={region}
+        onRegionChange={onRegionChange}
+        onRegionChangeComplete={onRegionChangeComplete}
+      >
+        {treeMarkers}
+      </MapView>
       {recenterOverlay}
     </View>
   );
